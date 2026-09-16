@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
-import { getRequestIp, hashClickIp } from "@/lib/tracking/server";
+import {
+  appendCampaignUtmParams,
+  getRequestIp,
+  hashClickIp,
+} from "@/lib/tracking/server";
 
 type RedirectRouteProps = {
   params: Promise<{ slug: string }>;
@@ -18,6 +22,10 @@ export async function GET(request: NextRequest, { params }: RedirectRouteProps) 
       automation: {
         select: {
           instagramAccountId: true,
+          name: true,
+          instagramAccount: {
+            select: { username: true },
+          },
         },
       },
     },
@@ -39,5 +47,10 @@ export async function GET(request: NextRequest, { params }: RedirectRouteProps) 
     },
   });
 
-  return NextResponse.redirect(trackedLink.destinationUrl, { status: 302 });
+  const taggedUrl = appendCampaignUtmParams(trackedLink.destinationUrl, {
+    campaign: trackedLink.automation.name,
+    content: trackedLink.automation.instagramAccount?.username,
+  });
+
+  return NextResponse.redirect(taggedUrl, { status: 302 });
 }

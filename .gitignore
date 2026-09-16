@@ -43,3 +43,6 @@ next-env.d.ts
 
 /app/generated/prisma
 .gstack/
+
+# local-machine-only overrides (port remaps, dev mail catcher, etc.)
+docker-compose.override.yml

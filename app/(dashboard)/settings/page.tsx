@@ -52,6 +52,7 @@ export default function SettingsPage() {
   const [membersData, setMembersData] = useState<WorkspaceMembersData | null>(
     null
   );
+  const [pausedAt, setPausedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [inviteEmail, setInviteEmail] = useState("");
@@ -62,13 +63,37 @@ export default function SettingsPage() {
     Promise.all([
       fetch("/api/dashboard/stats").then((res) => res.json()),
       fetch("/api/workspace/members").then((res) => res.json()),
+      fetch("/api/workspace/pause").then((res) => res.json()),
     ])
-      .then(([statsPayload, membersPayload]) => {
+      .then(([statsPayload, membersPayload, pausePayload]) => {
         if (statsPayload.success) setData(statsPayload.data);
         if (membersPayload.success) setMembersData(membersPayload.data);
+        if (pausePayload.success) setPausedAt(pausePayload.pausedAt);
       })
       .finally(() => setLoading(false));
   }, []);
+
+  async function toggleWorkspacePause() {
+    const next = !pausedAt;
+    if (
+      next &&
+      !confirm(
+        "Pause all automations in this workspace? Every connected account stops sending DMs until you resume."
+      )
+    ) {
+      return;
+    }
+
+    setBusy("workspace-pause");
+    const res = await fetch("/api/workspace/pause", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paused: next }),
+    });
+    const payload = await res.json();
+    if (payload.success) setPausedAt(payload.pausedAt);
+    setBusy(null);
+  }
 
   async function refreshMembers() {
     const res = await fetch("/api/workspace/members");
@@ -139,6 +164,42 @@ export default function SettingsPage() {
       </Suspense>
 
       <ZernioConnection canManage={canManageMembers} />
+
+      <section className="panel rounded p-4 sm:p-6 border-error/30">
+        <h2 className="text-base font-semibold mb-1">Emergency Stop</h2>
+        <p className="text-xs text-muted mb-6">
+          Pauses every campaign across all connected Instagram accounts in
+          this workspace, overriding each campaign&apos;s own enabled state.
+          Use this when something is misbehaving and you need to stop DMs
+          immediately.
+        </p>
+        <div className="flex items-center justify-between gap-3">
+          <span
+            className={`px-3 py-1.5 rounded-full text-xs font-medium ${
+              pausedAt ? "bg-error/10 text-error" : "bg-success/10 text-success"
+            }`}
+          >
+            {pausedAt ? "Paused" : "Running"}
+          </span>
+          {canManageMembers && (
+            <button
+              onClick={toggleWorkspacePause}
+              disabled={busy === "workspace-pause"}
+              className={`inline-flex items-center justify-center rounded px-4 py-2 text-sm font-medium transition-all disabled:opacity-50 ${
+                pausedAt
+                  ? "bg-accent text-white hover:bg-accent-hover"
+                  : "border border-error/20 text-error hover:border-error/40 hover:bg-error/10"
+              }`}
+            >
+              {busy === "workspace-pause"
+                ? "Updating..."
+                : pausedAt
+                  ? "Resume workspace"
+                  : "Pause all automations"}
+            </button>
+          )}
+        </div>
+      </section>
 
       <section className="panel rounded p-4 sm:p-6">
         <h2 className="text-base font-semibold mb-6">Instagram Connection</h2>

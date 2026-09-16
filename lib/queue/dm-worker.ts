@@ -216,6 +216,12 @@ function connectionScope(data: DmQueueJob) {
   return data.accountConnectionId ? { instagramAccountId: data.accountConnectionId } : {};
 }
 
+// Workspace-wide emergency stop: excludes every automation in a paused
+// workspace regardless of the automation's own isActive flag.
+function workspaceActiveScope() {
+  return { workspace: { pausedAt: null } };
+}
+
 async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
   const {
     instagramAccountId,
@@ -241,6 +247,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
         { matchAnyPost: true },
       ],
       isActive: true,
+      ...workspaceActiveScope(),
       instagramAccount: {
         instagramId: instagramAccountId,
       },
@@ -802,7 +809,12 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
   );
 
   const automation = await prisma.automation.findFirst({
-    where: { id: automationId, isActive: true, ...connectionScope(job.data) },
+    where: {
+      id: automationId,
+      isActive: true,
+      ...connectionScope(job.data),
+      ...workspaceActiveScope(),
+    },
     include: {
       instagramAccount: true,
       workspace: true,
@@ -1060,7 +1072,12 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
   const { instagramAccountId, userId, automationId, commenterName } = job.data;
 
   const automation = await prisma.automation.findFirst({
-    where: { id: automationId, isActive: true, ...connectionScope(job.data) },
+    where: {
+      id: automationId,
+      isActive: true,
+      ...connectionScope(job.data),
+      ...workspaceActiveScope(),
+    },
     include: { instagramAccount: true },
   });
 
@@ -1118,6 +1135,7 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
       ...connectionScope(job.data),
       dmTriggerEnabled: true,
       isActive: true,
+      ...workspaceActiveScope(),
       instagramAccount: { instagramId: instagramAccountId },
     },
     include: {

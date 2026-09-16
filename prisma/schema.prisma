@@ -75,6 +75,12 @@ model Workspace {
   usagePeriodStart  DateTime @default(now())
   dmsSentThisPeriod Int      @default(0)
 
+  // Workspace-wide emergency stop. When set, the worker skips every
+  // automation in this workspace regardless of the automation's own
+  // isActive flag. Complements per-campaign disable for a single kill
+  // switch across all connected accounts.
+  pausedAt DateTime?
+
   zernioConnection  ZernioConnection?
   members           WorkspaceMember[]
   invitations       WorkspaceInvitation[]

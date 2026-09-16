@@ -326,6 +326,7 @@ describe("DM Worker — Full Pipeline", () => {
       where: {
         OR: [{ postId: "media_101" }, { matchAnyPost: true }],
         isActive: true,
+        workspace: { pausedAt: null },
         instagramAccount: { instagramId: "ig_456" },
       },
       include: {
@@ -729,6 +730,33 @@ describe("DM Worker — Full Pipeline", () => {
     );
   });
 
+  it("excludes automations from a paused workspace when looking up the postback's campaign", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([]);
+    mockPrisma.automation.findFirst.mockResolvedValue({
+      ...mockAutomation,
+      trackedLinks: [],
+    });
+
+    const processor = getProcessor();
+    await processor(
+      createMockPostbackJob({
+        instagramAccountId: "ig_456",
+        userId: "commenter_999",
+        payload: "reveal:auto_789",
+        fallback: true,
+      })
+    );
+
+    expect(mockPrisma.automation.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          isActive: true,
+          workspace: { pausedAt: null },
+        }),
+      })
+    );
+  });
+
   it("should not deliver a read fallback when the button tap already sent the reveal", async () => {
     mockPrisma.automation.findMany.mockResolvedValue([]);
     mockPrisma.automation.findFirst.mockResolvedValue({
@@ -990,6 +1018,7 @@ describe("DM Worker — DM keyword trigger", () => {
         where: expect.objectContaining({
           dmTriggerEnabled: true,
           isActive: true,
+          workspace: { pausedAt: null },
         }),
       })
     );

@@ -23,3 +23,40 @@ export function getRequestIp(request: Request) {
     null
   );
 }
+
+export function slugifyUtmValue(value: string) {
+  return (
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "") || "campaign"
+  );
+}
+
+/**
+ * Appends campaign attribution params to a tracked link's destination so
+ * click-through analytics on the receiving side (e.g. Alpy) can attribute
+ * signups back to the originating automation. Existing query params on the
+ * destination are preserved; utm_* params are overwritten to keep them
+ * consistent with the automation that owns the link.
+ */
+export function appendCampaignUtmParams(
+  destinationUrl: string,
+  params: { campaign: string; content?: string | null }
+): string {
+  let url: URL;
+  try {
+    url = new URL(destinationUrl);
+  } catch {
+    return destinationUrl;
+  }
+
+  url.searchParams.set("utm_source", "instagram");
+  url.searchParams.set("utm_medium", "dm");
+  url.searchParams.set("utm_campaign", slugifyUtmValue(params.campaign));
+  if (params.content) {
+    url.searchParams.set("utm_content", slugifyUtmValue(params.content));
+  }
+
+  return url.toString();
+}
