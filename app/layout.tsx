@@ -3,20 +3,12 @@ import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "OpenReply - Open source Instagram comment-to-DM automation",
-  description:
-    "A free, self-hosted ManyChat alternative. Send an Instagram DM automatically when someone comments a keyword on your post or reel, using the official Meta API.",
-  keywords: [
-    "instagram automation",
-    "comment to DM",
-    "instagram private replies",
-    "social commerce",
-    "manychat alternative",
-  ],
+  title: "Alpy Automation",
+  description: "Alpy internal automation dashboard.",
   manifest: "/manifest.webmanifest",
   appleWebApp: {
     capable: true,
-    title: "OpenReply",
+    title: "Alpy Automation",
     statusBarStyle: "black-translucent",
   },
   icons: {
