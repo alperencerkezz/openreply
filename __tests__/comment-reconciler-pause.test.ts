@@ -17,7 +17,7 @@ const { mockPrisma, mockAdd, mockComments, mockPaused } = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/db/client", () => ({ prisma: mockPrisma }));
-vi.mock("@/lib/queue/client", () => ({ getDMQueue: () => ({ add: mockAdd }) }));
+vi.mock("@/lib/queue/client", () => ({ getDMQueue: () => ({ add: mockAdd }), MESSAGE_JOB_NAME: "process-message" }));
 vi.mock("@/lib/instagram/messaging-pause", () => ({ messagingPaused: mockPaused }));
 vi.mock("@/lib/instagram/provider", () => ({
   getRecentMediaComments: mockComments,
@@ -79,5 +79,54 @@ describe("comment sweep and a paused account", () => {
     mockPaused.mockResolvedValue(false);
     await reconcileComments();
     expect(mockAdd).toHaveBeenCalledWith("process-comment", expect.objectContaining({ commentId: "c1", source: "POLLING" }));
+  });
+});
+
+describe("message DMs missed while messaging was off", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPrisma.automation.findMany.mockResolvedValue([]);
+    mockPrisma.operationalEvent.create.mockResolvedValue({});
+  });
+
+  const row = (id: string, account = "ig_1") => ({
+    commentId: `dm:${id}`,
+    commentText: "GUIDE",
+    commenterId: `sender_${id}`,
+    instagramAccount: { id: `row_${account}`, instagramId: account },
+  });
+
+  it("re-queues only rows refused for that reason, inside the 24-hour window", async () => {
+    mockPaused.mockResolvedValue(false);
+    mockPrisma.dmLog.findMany.mockResolvedValue([row("m1")]);
+    const { recoverMissedMessages } = await import("../lib/polling/comment-reconciler");
+    await expect(recoverMissedMessages()).resolves.toBe(1);
+    const where = mockPrisma.dmLog.findMany.mock.calls[0][0].where;
+    expect(where).toMatchObject({
+      status: "FAILED",
+      commentId: { startsWith: "dm:" },
+      errorMessage: { contains: "Allow access to messages" },
+    });
+    expect(Date.now() - where.createdAt.gt.getTime()).toBeLessThan(24 * 60 * 60 * 1000);
+    expect(mockAdd).toHaveBeenCalledWith(
+      "process-message",
+      { instagramAccountId: "ig_1", accountConnectionId: "row_ig_1", messageId: "m1", messageText: "GUIDE", senderId: "sender_m1" },
+      { jobId: `recover-dm-${Buffer.from("m1").toString("base64url")}` }
+    );
+  });
+
+  it("answers a message once even when several campaigns logged it", async () => {
+    mockPaused.mockResolvedValue(false);
+    mockPrisma.dmLog.findMany.mockResolvedValue([row("m1"), row("m1")]);
+    const { recoverMissedMessages } = await import("../lib/polling/comment-reconciler");
+    await expect(recoverMissedMessages()).resolves.toBe(1);
+  });
+
+  it("waits while the account is still paused", async () => {
+    mockPaused.mockResolvedValue(true);
+    mockPrisma.dmLog.findMany.mockResolvedValue([row("m1")]);
+    const { recoverMissedMessages } = await import("../lib/polling/comment-reconciler");
+    await expect(recoverMissedMessages()).resolves.toBe(0);
+    expect(mockAdd).not.toHaveBeenCalled();
   });
 });

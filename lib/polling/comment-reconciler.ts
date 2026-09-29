@@ -26,7 +26,7 @@
  */
 
 import { prisma } from "@/lib/db/client";
-import { getDMQueue } from "@/lib/queue/client";
+import { getDMQueue, MESSAGE_JOB_NAME } from "@/lib/queue/client";
 import {
   getRecentMediaComments,
   getUserMedia,
@@ -113,6 +113,72 @@ export async function reconcileComments(): Promise<void> {
     );
     await recordSweep(automation.workspaceId, stat);
   }
+  await recoverMissedMessages().catch((error) =>
+    console.error("[Sweep] Missed message DMs not recovered:", errMessage(error))
+  );
+}
+
+/**
+ * DMs to people who messaged in (or replied to a Story) while the account's
+ * messaging was switched off.
+ *
+ * The comment sweep above answers missed comments by itself, because it reads
+ * them back from Instagram. Nothing reads messages back, so a message whose DM
+ * was refused would otherwise stay unanswered for good. Its log row keeps what
+ * the job needs: the sender, the text, and the message id behind "dm:". Only
+ * rows refused for exactly that reason are re-queued, only inside Instagram's
+ * 24-hour window for replying to a message, and only once the account is no
+ * longer paused. processMessage skips anything already answered, and a row that
+ * fails again for any other reason stops matching, so this cannot loop.
+ */
+const MESSAGE_WINDOW_MS = 23 * 60 * 60 * 1000;
+const MAX_MESSAGES_PER_SWEEP = 30;
+
+export async function recoverMissedMessages(): Promise<number> {
+  const missed = await prisma.dmLog.findMany({
+    where: {
+      status: "FAILED",
+      commentId: { startsWith: "dm:" },
+      errorMessage: { contains: "Allow access to messages" },
+      createdAt: { gt: new Date(Date.now() - MESSAGE_WINDOW_MS) },
+    },
+    select: {
+      commentId: true,
+      commentText: true,
+      commenterId: true,
+      instagramAccount: { select: { id: true, instagramId: true } },
+    },
+    orderBy: { createdAt: "asc" },
+    take: MAX_MESSAGES_PER_SWEEP,
+  });
+  const queue = getDMQueue();
+  const seen = new Set<string>();
+  let enqueued = 0;
+  for (const row of missed) {
+    const account = row.instagramAccount;
+    // Several campaigns can log the same message; one job answers them all.
+    if (seen.has(row.commentId)) continue;
+    seen.add(row.commentId);
+    if (await messagingPaused(account.instagramId)) continue;
+    const messageId = row.commentId.slice("dm:".length);
+    await queue.add(
+      MESSAGE_JOB_NAME,
+      {
+        instagramAccountId: account.instagramId,
+        accountConnectionId: account.id,
+        messageId,
+        messageText: row.commentText,
+        senderId: row.commenterId,
+      },
+      // One job per message while it is queued or running, so two sweeps can
+      // never race two DMs to the same person. base64url, as the webhook does:
+      // message ids carry characters BullMQ rejects in a job id.
+      { jobId: `recover-dm-${Buffer.from(messageId).toString("base64url")}` }
+    );
+    enqueued += 1;
+  }
+  if (enqueued) console.log(`[Sweep] Re-queued ${enqueued} message DM(s) missed while messaging was off`);
+  return enqueued;
 }
 
 async function sweepCampaign({
