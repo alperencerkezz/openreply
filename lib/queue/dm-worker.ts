@@ -82,7 +82,27 @@ const NON_TEMPLATE_REJECTIONS = [
   /requested user cannot be found/i,
   // The account's messaging is switched off: no message of any shape is sent.
   /disabled access to Instagram Direct Messaging/i,
+  // Not a template rejection, and possibly delivered: see isDeliveryUnconfirmed.
+  /An unknown error has occurred/i,
 ];
+
+/**
+ * A send Meta answered with "An unknown error has occurred" (code 1) may well
+ * have been delivered, and must never be sent again.
+ *
+ * It was treated as a failure: a second copy went out as plain text, the job
+ * was retried twice, and because the DM log never said SENT the comment sweep
+ * queued the comment again every five minutes. Three commenters were sent the
+ * same DM over and over for more than a day (2026-09-27 to 29) until it was
+ * reported. It is now handled exactly like Zernio's unconfirmed delivery:
+ * logged as unconfirmed, not retried, and skipped by the sweep.
+ */
+function isDeliveryUnconfirmed(sent: unknown): boolean {
+  return (
+    sent instanceof ZernioDeliveryUnconfirmedError ||
+    (sent instanceof Error && /An unknown error has occurred/i.test(sent.message))
+  );
+}
 
 function isTemplateRejection(error: unknown): boolean {
   if (
@@ -458,7 +478,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
                 commentId,
               },
             },
-            data: { publicReplyError: formatError(error), publicReplyDeliveryUnconfirmed: error instanceof ZernioDeliveryUnconfirmedError },
+            data: { publicReplyError: formatError(error), publicReplyDeliveryUnconfirmed: isDeliveryUnconfirmed(error) },
           })
           .catch(() => {});
       }
@@ -534,7 +554,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           status: "FAILED",
           attempts: job.attemptsMade + 1,
           errorMessage: formatError(error),
-          dmDeliveryUnconfirmed: error instanceof ZernioDeliveryUnconfirmedError,
+          dmDeliveryUnconfirmed: isDeliveryUnconfirmed(error),
         },
       });
       throw error;
@@ -755,7 +775,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           status: "FAILED",
           attempts: job.attemptsMade + 1,
           errorMessage: formatError(error),
-          dmDeliveryUnconfirmed: error instanceof ZernioDeliveryUnconfirmedError,
+          dmDeliveryUnconfirmed: isDeliveryUnconfirmed(error),
         },
       });
       throw error;
@@ -800,7 +820,7 @@ async function sendPostbackOnce({
       await prisma.postbackDelivery.delete({ where: { id: operationId } });
       throw error;
     }
-    throw error instanceof ZernioDeliveryUnconfirmedError
+    throw isDeliveryUnconfirmed(error)
       ? error
       : new ZernioDeliveryUnconfirmedError();
   }
@@ -1038,7 +1058,7 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
     // failure the user can act on — so don't log it as FAILED and don't retry
     // it against a window that cannot reopen on its own. It still delivers in
     // the case that does work: the user replied by typing instead of tapping.
-    if (fallback && !(error instanceof ZernioDeliveryUnconfirmedError)) {
+    if (fallback && !(isDeliveryUnconfirmed(error))) {
       console.log(
         "[DM Worker] Read fallback not delivered (messaging window closed):",
         formatError(error),
@@ -1063,12 +1083,12 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
         commentId: dedupeId,
         status: "FAILED",
         errorMessage: formatError(error),
-        dmDeliveryUnconfirmed: error instanceof ZernioDeliveryUnconfirmedError,
+        dmDeliveryUnconfirmed: isDeliveryUnconfirmed(error),
       },
       update: {
         status: "FAILED",
         errorMessage: formatError(error),
-        dmDeliveryUnconfirmed: error instanceof ZernioDeliveryUnconfirmedError,
+        dmDeliveryUnconfirmed: isDeliveryUnconfirmed(error),
       },
     });
     throw error;
@@ -1397,13 +1417,13 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
           status: "FAILED",
           attempts: job.attemptsMade + 1,
           errorMessage: formatError(error),
-          dmDeliveryUnconfirmed: error instanceof ZernioDeliveryUnconfirmedError,
+          dmDeliveryUnconfirmed: isDeliveryUnconfirmed(error),
         },
         update: {
           status: "FAILED",
           attempts: job.attemptsMade + 1,
           errorMessage: formatError(error),
-          dmDeliveryUnconfirmed: error instanceof ZernioDeliveryUnconfirmedError,
+          dmDeliveryUnconfirmed: isDeliveryUnconfirmed(error),
         },
       });
       throw error;
@@ -1435,8 +1455,9 @@ async function processJob(job: Job<DmQueueJob>): Promise<void> {
   try {
     await dispatchJob(job);
   } catch (error) {
-    if (error instanceof ZernioDeliveryUnconfirmedError)
-      throw new UnrecoverableError(error.message);
+    // Possibly delivered: never retried, so never sent twice.
+    if (isDeliveryUnconfirmed(error))
+      throw new UnrecoverableError(formatError(error));
     if (isMessagingDisabled(error)) {
       if (account) await pauseMessaging(account);
       throw new UnrecoverableError(formatError(error));

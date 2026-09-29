@@ -964,6 +964,53 @@ describe("DM Worker — one private reply per comment", () => {
     );
   });
 
+  it("never sends a DM again after Meta answers 'An unknown error has occurred'", async () => {
+    // Three commenters got the same DM over and over for a day: the error came
+    // back although the DM was delivered, a plain-text copy followed, the job
+    // retried, and the sweep re-queued the comment every five minutes.
+    mockPrisma.automation.findMany.mockResolvedValue([
+      {
+        ...mockAutomation,
+        trackedLinks: [
+          { slug: "abc123", label: null, destinationUrl: "https://example.com" },
+        ],
+      },
+    ]);
+    mockSendPrivateReplyWithLinkButton.mockRejectedValue(
+      new Error(
+        "An unknown error has occurred. (/v25.0/17841433494513099/messages) [code=1 sub=- type=OAuthException trace=Ak6gJErtfDq1k36YdYg1w_R]"
+      )
+    );
+
+    const processor = getProcessor();
+    // Unrecoverable: no retry.
+    await expect(processor(createMockJob())).rejects.toMatchObject({
+      name: "UnrecoverableError",
+    });
+    // No second copy as plain text.
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    // Logged as possibly delivered, which the worker and the sweep both skip.
+    const writes = [
+      ...mockPrisma.dmLog.update.mock.calls.map((c) => c[0].data),
+      ...mockPrisma.dmLog.upsert.mock.calls.flatMap((c) => [c[0].create, c[0].update]),
+    ];
+    expect(writes).toContainEqual(expect.objectContaining({ dmDeliveryUnconfirmed: true }));
+  });
+
+  it("skips a comment already logged as possibly delivered", async () => {
+    mockPrisma.dmLog.findUnique.mockResolvedValue({
+      status: "FAILED",
+      dmDeliveryUnconfirmed: true,
+      publicReplySentAt: null,
+      publicReplyDeliveryUnconfirmed: false,
+    });
+    const processor = getProcessor();
+    await processor(createMockJob());
+    expect(mockSendPrivateReplyWithLinkButton).not.toHaveBeenCalled();
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockSendPrivateReplyWithButton).not.toHaveBeenCalled();
+  });
+
   it("sends the scheduled follow-up", async () => {
     mockPrisma.automation.findFirst.mockResolvedValue({
       ...mockAutomation,
