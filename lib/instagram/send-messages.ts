@@ -6,6 +6,7 @@ import {
   ZernioDeliveryUnconfirmedError,
 } from "@/lib/zernio/client";
 import type { InstagramContext, ZernioContext } from "./context";
+import { guardSend } from "@/lib/ops/send-guard";
 
 type Button =
   | { type: "url"; title: string; url: string }
@@ -86,6 +87,7 @@ export async function sendPrivateReply({
   message: string;
   postId?: string;
 }) {
+  await guardSend("comment", instagramAccountId, commentId);
   if (context.provider === "META")
     return meta.sendPrivateReply(
       context.accessToken,
@@ -113,6 +115,7 @@ export async function sendPrivateReplyWithButton({
   payload: string;
   postId?: string;
 }) {
+  await guardSend("comment", instagramAccountId, commentId);
   if (context.provider === "META")
     return meta.sendPrivateReplyWithButton(
       context.accessToken,
@@ -146,6 +149,7 @@ export async function sendDirectMessageWithButton({
   buttonTitle: string;
   payload: string;
 }) {
+  await guardSend("person", instagramAccountId, userId);
   if (context.provider === "META")
     return meta.sendDirectMessageWithButton(
       context.accessToken,
@@ -178,6 +182,7 @@ export async function sendPrivateReplyWithLinkButton({
   buttons: meta.LinkButton[];
   postId?: string;
 }) {
+  await guardSend("comment", instagramAccountId, commentId);
   if (context.provider === "META")
     return meta.sendPrivateReplyWithLinkButton(
       context.accessToken,
@@ -206,6 +211,7 @@ export async function sendDirectMessage({
   userId: string;
   message: string;
 }) {
+  await guardSend("person", instagramAccountId, userId);
   if (context.provider === "META")
     return meta.sendDirectMessage(
       context.accessToken,
@@ -229,6 +235,7 @@ export async function sendDirectMessageWithLinkButton({
   text: string;
   buttons: meta.LinkButton[];
 }) {
+  await guardSend("person", instagramAccountId, userId);
   if (context.provider === "META")
     return meta.sendDirectMessageWithLinkButton(
       context.accessToken,
@@ -256,6 +263,7 @@ export async function sendCommentReply({
   message: string;
   postId?: string;
 }) {
+  await guardSend("publicReply", context.provider === "META" ? "meta" : context.accountId, commentId);
   if (context.provider === "META")
     return meta.sendCommentReply(context.accessToken, commentId, message);
   const result = await zernioRequest<{ data: { commentId: string } }>({

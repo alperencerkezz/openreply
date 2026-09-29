@@ -55,6 +55,8 @@ while true; do
       if [ "$last_slot" != "$hhmm" ]; then
         last_slot="$hhmm"
         call attach-next-reel
+        # Emails the owner if the DM worker has stopped (one per hour).
+        call check-worker
       fi
       ;;
   esac

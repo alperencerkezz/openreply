@@ -48,6 +48,8 @@ import {
   ZernioApiError,
   ZernioDeliveryUnconfirmedError,
 } from "@/lib/zernio/client";
+import { SendCapError } from "@/lib/ops/send-guard";
+import { sendOwnerAlert } from "@/lib/ops/alerts";
 import {
   isMessagingDisabled,
   messagingPaused,
@@ -84,6 +86,8 @@ const NON_TEMPLATE_REJECTIONS = [
   /disabled access to Instagram Direct Messaging/i,
   // Not a template rejection, and possibly delivered: see isDeliveryUnconfirmed.
   /An unknown error has occurred/i,
+  // Refused before Meta was called (lib/ops/send-guard.ts).
+  /repeat-DM safety cap/i,
 ];
 
 /**
@@ -100,6 +104,8 @@ const NON_TEMPLATE_REJECTIONS = [
 function isDeliveryUnconfirmed(sent: unknown): boolean {
   return (
     sent instanceof ZernioDeliveryUnconfirmedError ||
+    // Capped as a likely loop: treated the same way, so the sweep stops too.
+    sent instanceof SendCapError ||
     (sent instanceof Error && /An unknown error has occurred/i.test(sent.message))
   );
 }
@@ -1459,10 +1465,60 @@ async function processJob(job: Job<DmQueueJob>): Promise<void> {
     if (isDeliveryUnconfirmed(error))
       throw new UnrecoverableError(formatError(error));
     if (isMessagingDisabled(error)) {
-      if (account) await pauseMessaging(account);
+      if (account) {
+        await pauseMessaging(account);
+        await alertMessagingDisabled(account);
+      }
       throw new UnrecoverableError(formatError(error));
     }
     throw error;
+  }
+}
+
+/**
+ * One email when an account's messaging is switched off: every DM stops until
+ * the owner turns it back on, and on 2026-09-28 that went unnoticed for
+ * eleven hours.
+ */
+async function alertMessagingDisabled(instagramAccountId: string) {
+  const account = await prisma.instagramAccount
+    .findUnique({ where: { instagramId: instagramAccountId }, select: { workspaceId: true, username: true } })
+    .catch(() => null);
+  await sendOwnerAlert({
+    key: `messaging-disabled:${instagramAccountId}`,
+    workspaceId: account?.workspaceId,
+    subject: `DMs stopped: Instagram messaging is off for @${account?.username ?? instagramAccountId}`,
+    text:
+      `Instagram is refusing every DM from @${account?.username ?? instagramAccountId}: "The account owner has disabled access to Instagram Direct Messaging".\n\n` +
+      `Turn it back on in the Instagram app: Settings → Messages and story replies → Message controls → Connected tools → Allow access to messages.\n\n` +
+      `Sending resumes by itself within 15 minutes, and comments from the last 72 hours that were missed are answered then.`,
+  });
+}
+
+/**
+ * Failures in bulk: more than a few in a quarter of an hour on one account
+ * is an outage, not a bad comment, and is emailed once.
+ */
+const FAILURE_BURST = 10;
+const FAILURE_WINDOW_SECONDS = 15 * 60;
+async function countFailure(instagramAccountId: string, workspaceId: string | null, reason: string) {
+  try {
+    const redis = getRedisConnection();
+    const key = `openreply:failures:${instagramAccountId}:${Math.floor(Date.now() / (FAILURE_WINDOW_SECONDS * 1000))}`;
+    const count = await redis.incr(key);
+    if (count === 1) await redis.expire(key, FAILURE_WINDOW_SECONDS * 2);
+    if (count !== FAILURE_BURST) return;
+    await sendOwnerAlert({
+      key: `failure-burst:${instagramAccountId}`,
+      workspaceId,
+      quietSeconds: 2 * 60 * 60,
+      subject: `${FAILURE_BURST} DMs failed in 15 minutes`,
+      text:
+        `${FAILURE_BURST} DM jobs failed within 15 minutes for Instagram account ${instagramAccountId}. The latest reason:\n\n${reason}\n\n` +
+        `Open the DM logs in the dashboard to see which campaigns and people are affected.`,
+    });
+  } catch {
+    /* counting failures must never add one */
   }
 }
 
@@ -1495,6 +1551,8 @@ async function recordWorkerFailure(
         },
       },
     });
+
+    if (instagramAccountId) await countFailure(instagramAccountId, account?.workspaceId ?? null, error.message);
 
     await recordWorkerAlert({
       level: "error",
