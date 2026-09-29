@@ -16,6 +16,8 @@ const {
   mockQueueAdd,
   mockReserveWorkspaceDMSend,
   mockReleaseWorkspaceDMReservation,
+  mockMessagingPaused,
+  mockPauseMessaging,
 } = vi.hoisted(() => ({
   mockPrisma: {
     zernioConnection: { findUnique: vi.fn() },
@@ -52,6 +54,8 @@ const {
   mockQueueAdd: vi.fn(),
   mockReserveWorkspaceDMSend: vi.fn(),
   mockReleaseWorkspaceDMReservation: vi.fn(),
+  mockMessagingPaused: vi.fn(),
+  mockPauseMessaging: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -104,6 +108,12 @@ vi.mock("@/lib/utils/rate-limiter", () => ({
 vi.mock("@/lib/billing/usage", () => ({
   reserveWorkspaceDMSend: mockReserveWorkspaceDMSend,
   releaseWorkspaceDMReservation: mockReleaseWorkspaceDMReservation,
+}));
+
+vi.mock("@/lib/instagram/messaging-pause", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/instagram/messaging-pause")>()),
+  messagingPaused: mockMessagingPaused,
+  pauseMessaging: mockPauseMessaging,
 }));
 
 vi.mock("@/lib/ops/worker-health", () => ({
@@ -218,6 +228,8 @@ function createMockPostbackJob(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockMessagingPaused.mockResolvedValue(false);
+  mockPauseMessaging.mockResolvedValue(undefined);
   mockPrisma.postbackDelivery.create.mockReset().mockResolvedValue({});
   mockPrisma.postbackDelivery.delete.mockReset().mockResolvedValue({});
 
@@ -950,6 +962,57 @@ describe("DM Worker — one private reply per comment", () => {
         }),
       })
     );
+  });
+
+  it("pauses the account and does not retry when Instagram says its messaging is off", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([
+      {
+        ...mockAutomation,
+        trackedLinks: [
+          { slug: "abc123", label: null, destinationUrl: "https://example.com" },
+        ],
+      },
+    ]);
+    // Verbatim from production, 2026-09-29.
+    mockSendPrivateReplyWithLinkButton.mockRejectedValue(
+      new Error(
+        "The account owner has disabled access to Instagram Direct Messaging. (/v25.0/17841433494513099/messages) [code=200 sub=- type=IGApiException trace=AD3n8pyWhLCXZuEK2qWI4Z4]"
+      )
+    );
+
+    const processor = getProcessor();
+    const failure = processor(createMockJob());
+    // Unrecoverable: BullMQ must not spend two more attempts on it.
+    await expect(failure).rejects.toMatchObject({ name: "UnrecoverableError" });
+    await expect(failure).rejects.toThrow(/Allow access to messages/);
+
+    expect(mockPauseMessaging).toHaveBeenCalledWith("ig_456");
+    // No plain-text second attempt: it is refused the same way.
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    // The DM log says what to do, not only what Meta said.
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: "FAILED",
+          errorMessage: expect.stringContaining("Connected tools → Allow access to messages"),
+        }),
+      })
+    );
+  });
+
+  it("sends nothing, and calls Meta for nothing, while the account is paused", async () => {
+    mockMessagingPaused.mockResolvedValue(true);
+
+    const processor = getProcessor();
+    await expect(processor(createMockJob())).rejects.toMatchObject({
+      name: "UnrecoverableError",
+    });
+
+    expect(mockMessagingPaused).toHaveBeenCalledWith("ig_456");
+    expect(mockSendPrivateReplyWithLinkButton).not.toHaveBeenCalled();
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+    expect(mockReserveDMSlot).not.toHaveBeenCalled();
   });
 
   it("should still fall back to plain text when the button template itself is rejected", async () => {

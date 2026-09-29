@@ -38,6 +38,7 @@ import {
   type InstagramContext,
 } from "@/lib/instagram/provider";
 import { matchKeywords } from "@/lib/utils/keyword-matcher";
+import { messagingPaused } from "@/lib/instagram/messaging-pause";
 
 // Only consider comments from the last few days — older ones are outside
 // Instagram's private-reply window anyway, so a DM to them would just fail.
@@ -152,6 +153,16 @@ async function sweepCampaign({
     enqueued: 0,
     errors: [],
   };
+
+  // Messaging is off for this account, so nothing queued now could be sent.
+  // Its comments are picked up by a later sweep, once the pause runs out and
+  // a send has confirmed messaging is back (lib/instagram/messaging-pause.ts).
+  if (await messagingPaused(account.instagramId)) {
+    stat.errors.push(
+      'Paused: Instagram refused DMs because "Allow access to messages" is off for this account.'
+    );
+    return stat;
+  }
 
   // Decrypt the account token once per sweep.
   let accessToken = tokenCache.get(account.id);

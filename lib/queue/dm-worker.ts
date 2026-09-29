@@ -48,10 +48,20 @@ import {
   ZernioApiError,
   ZernioDeliveryUnconfirmedError,
 } from "@/lib/zernio/client";
+import {
+  isMessagingDisabled,
+  messagingPaused,
+  pauseMessaging,
+  MESSAGING_DISABLED_HELP,
+} from "@/lib/instagram/messaging-pause";
 
 const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
 
 function formatError(error: unknown): string {
+  // Said as what to do, since this is what the DM log shows the account owner.
+  if (isMessagingDisabled(error)) {
+    return `${MESSAGING_DISABLED_HELP} (${error instanceof Error ? error.message : ""})`;
+  }
   if (error instanceof MetaApiError) {
     return `${error.name} ${error.code}: ${error.message}`;
   }
@@ -70,6 +80,8 @@ const NON_TEMPLATE_REJECTIONS = [
   /outside of allowed window/i,
   /invalid for a private reply/i,
   /requested user cannot be found/i,
+  // The account's messaging is switched off: no message of any shape is sent.
+  /disabled access to Instagram Direct Messaging/i,
 ];
 
 function isTemplateRejection(error: unknown): boolean {
@@ -1399,11 +1411,22 @@ async function dispatchJob(job: Job<DmQueueJob>): Promise<void> {
 }
 
 async function processJob(job: Job<DmQueueJob>): Promise<void> {
+  const account = job.data.instagramAccountId;
+  // Messaging is off for this account (lib/instagram/messaging-pause.ts):
+  // nothing can be sent until the owner turns it back on, so this job is not
+  // sent, not retried, and costs Meta no call. The comment sweep answers it
+  // once messaging is back.
+  if (account && (await messagingPaused(account)))
+    throw new UnrecoverableError(MESSAGING_DISABLED_HELP);
   try {
     await dispatchJob(job);
   } catch (error) {
     if (error instanceof ZernioDeliveryUnconfirmedError)
       throw new UnrecoverableError(error.message);
+    if (isMessagingDisabled(error)) {
+      if (account) await pauseMessaging(account);
+      throw new UnrecoverableError(formatError(error));
+    }
     throw error;
   }
 }
