@@ -1124,10 +1124,24 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
       }),
     });
   } catch (error) {
+    // Best effort, not retried, but no longer invisible: a follow-up that
+    // failed only ever reached the container log, which is how it went
+    // unnoticed that follow-ups were not arriving.
     console.log(
       "[DM Worker] Failed to send follow-up message:",
       formatError(error)
     );
+    await prisma.operationalEvent
+      .create({
+        data: {
+          workspaceId: automation.workspaceId,
+          source: "WORKER",
+          level: "WARNING",
+          message: `Follow-up for campaign "${automation.name}" not delivered: ${formatError(error)}`.slice(0, 1000),
+          payload: { automationId: automation.id, userId, jobId: job.id ?? null },
+        },
+      })
+      .catch(() => {});
   }
 }
 

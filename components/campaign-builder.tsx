@@ -975,6 +975,16 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                   {" {username}"} personalizes it. Max 24 hours, to stay inside
                   Instagram&apos;s messaging window.
                 </p>
+                {/* Without a tap there is nothing to follow up on: Instagram
+                    allows one private reply to a comment and no further DM
+                    until the person taps a button or messages back, so the
+                    follow-up is only ever scheduled after a tap. It used to be
+                    switchable here with no sign it would never send. */}
+                {!openingDmEnabled && !requireFollow && (
+                  <p role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-foreground">
+                    This follow-up will not be sent. Instagram allows only one private reply to a comment, and no second DM until the person taps a button or writes back. Turn on the opening DM above, or the follow gate, so there is a tap to follow up on.
+                  </p>
+                )}
               </div>
             )}
           </div>

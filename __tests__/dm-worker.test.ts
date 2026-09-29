@@ -964,6 +964,54 @@ describe("DM Worker — one private reply per comment", () => {
     );
   });
 
+  it("sends the scheduled follow-up", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue({
+      ...mockAutomation,
+      name: "Guide",
+      followUpEnabled: true,
+      followUpMessage: "Thanks {username}!",
+    });
+    mockSendDirectMessage.mockResolvedValue({});
+    const processor = getProcessor();
+    await processor({
+      name: "process-followup",
+      data: { instagramAccountId: "ig_456", userId: "commenter_999", automationId: "auto_789", commenterName: "commenter_user" },
+      id: "followup_job_001",
+      attemptsMade: 0,
+    });
+    expect(mockSendDirectMessage).toHaveBeenCalledWith("decrypted_token", "ig_456", "commenter_999", "Thanks commenter_user!");
+    expect(mockPrisma.operationalEvent.create).not.toHaveBeenCalled();
+  });
+
+  it("records a follow-up Instagram refused where the dashboard shows it", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue({
+      ...mockAutomation,
+      name: "Guide",
+      followUpEnabled: true,
+      followUpMessage: "Thanks!",
+    });
+    mockPrisma.operationalEvent.create.mockResolvedValue({});
+    mockSendDirectMessage.mockRejectedValue(new Error("This message is sent outside of allowed window."));
+    const processor = getProcessor();
+    // Best effort: not retried.
+    await expect(
+      processor({
+        name: "process-followup",
+        data: { instagramAccountId: "ig_456", userId: "commenter_999", automationId: "auto_789" },
+        id: "followup_job_002",
+        attemptsMade: 0,
+      })
+    ).resolves.toBeUndefined();
+    expect(mockPrisma.operationalEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          level: "WARNING",
+          message: expect.stringContaining('Follow-up for campaign "Guide" not delivered: This message is sent outside of allowed window.'),
+        }),
+      })
+    );
+  });
+
   it("pauses the account and does not retry when Instagram says its messaging is off", async () => {
     mockPrisma.automation.findMany.mockResolvedValue([
       {
